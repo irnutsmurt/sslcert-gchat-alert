@@ -27,7 +27,13 @@ def check_ssl_expiry(domain):
         port = 443
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     sock.settimeout(5.0)
-    sock.connect((domain, port))
+
+    try:
+        sock.connect((domain, port))
+    except socket.gaierror as e:
+        print(f"Error resolving domain {domain}: {e}")
+        return None
+
     context = OpenSSL.SSL.Context(OpenSSL.SSL.TLSv1_2_METHOD)
     conn = OpenSSL.SSL.Connection(context, sock)
     conn.set_tlsext_host_name(domain.encode())
@@ -58,18 +64,21 @@ def read_expiring_certs(filename="expiring_certs.txt"):
     if not os.path.exists(filename):
         with open(filename, "w") as file:
             pass
-        return []
+        return {}
 
+    expiring_certs = {}
     with open(filename, "r") as file:
-        expiring_certs = [line.strip() for line in file.readlines()]
+        for line in file.readlines():
+            domain, alerted_date = line.strip().split(' ')
+            alerted_date = datetime.datetime.strptime(alerted_date, "%Y-%m-%dT%H:%M:%S.%f")
+            expiring_certs[domain] = alerted_date
 
     return expiring_certs
 
-
 def write_expiring_certs(expiring_certs, filename="expiring_certs.txt"):
     with open(filename, "w") as file:
-        for domain in expiring_certs:
-            file.write(domain + "\n")
+        for domain, alerted_date in expiring_certs.items():
+            file.write(f"{domain} {alerted_date.isoformat()}\n")
 
 def google_chat_alert(webhook_url, service_name, days_left, alert_days, alert_again, expiring_certs):
     if days_left <= 0:
@@ -100,25 +109,31 @@ def send_alert(webhook_url, service_name, message):
         print(f"Sent SSL certificate alert for {service_name}")
 
 def main():
-    while True:
-        config = configparser.ConfigParser()
-        config.read('config.ini')
-        chat_webhook_url = config['chat_webhook']['webhook_url']
-        alert_days = int(config['domains']['alert_days'])
-        alert_again = int(config['domains']['alert_again'])
+    config = configparser.ConfigParser()
+    config.read('config.ini')
+    chat_webhook_url = config['chat_webhook']['webhook_url']
+    domains = read_domains()
+    alert_days = int(config['domains']['alert_days'])
+    alert_again = int(config['domains']['alert_again'])
+    expiring_certs = read_expiring_certs()
 
-        domains = read_domains()
-        expiring_certs = read_expiring_certs()
+    for domain in domains:
+        domain = domain.strip()
+        days_left = check_ssl_expiry(domain)
 
-        for domain in domains:
-            domain = domain.strip()
-            days_left = check_ssl_expiry(domain)
-            google_chat_alert(chat_webhook_url, domain, days_left, alert_days, alert_again, expiring_certs)
-            if days_left <= alert_days:
-                check_certificate_renewal(domain, days_left)
+        if days_left <= alert_days:
+            if expiring_certs.get(domain) is None or (datetime.datetime.now() - expiring_certs.get(domain)).days >= alert_again:
+                google_chat_alert(chat_webhook_url, domain, days_left, alert_days, alert_again, expiring_certs)
+                expiring_certs[domain] = datetime.datetime.now()
+                write_expiring_certs(expiring_certs)
+            else:
+                next_alert_in_days = alert_again - (datetime.datetime.now() - expiring_certs.get(domain)).days
+                print(f"Domain {domain} has already been alerted on. Next alert in {next_alert_in_days} days.")
+        elif domain in expiring_certs:
+            del expiring_certs[domain]
+            write_expiring_certs(expiring_certs)
 
-        # Sleep for 24 hours (24*60*60 seconds) before running the loop again
-        time.sleep(24 * 60 * 60)
+    time.sleep(86400)
 
 if __name__ == '__main__':
     main()
