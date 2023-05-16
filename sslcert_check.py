@@ -82,19 +82,20 @@ def write_expiring_certs(expiring_certs, filename="expiring_certs.txt"):
 
 def google_chat_alert(webhook_url, service_name, days_left, alert_days, alert_again, expiring_certs):
     if days_left <= 0:
-        message = f"❌ SSL certificate for {service_name} has expired!"
-        send_alert(webhook_url, service_name, message)
+        if service_name not in expiring_certs or (datetime.datetime.now() - expiring_certs[service_name]).days >= alert_again:
+            message = f"❌ SSL certificate for {service_name} has expired! Please Renew Immediately!"
+            send_alert(webhook_url, service_name, message)
+            expiring_certs[service_name] = datetime.datetime.now()
     elif days_left <= alert_days:
-        if service_name not in expiring_certs or (service_name in expiring_certs and days_left % alert_again == 0):
-            expiring_certs.append(service_name)
-            write_expiring_certs(expiring_certs)
+        if service_name not in expiring_certs or (datetime.datetime.now() - expiring_certs[service_name]).days >= alert_again:
             message = f"⚠️ SSL certificate for {service_name} will expire in {days_left} days!"
             send_alert(webhook_url, service_name, message)
+            expiring_certs[service_name] = datetime.datetime.now()
     elif service_name in expiring_certs:
-        expiring_certs.remove(service_name)
-        write_expiring_certs(expiring_certs)
+        del expiring_certs[service_name]
         message = f"✅ SSL certificate for {service_name} has been renewed! It is now valid for {days_left} days."
         send_alert(webhook_url, service_name, message)
+    write_expiring_certs(expiring_certs)
 
 def send_alert(webhook_url, service_name, message):
     print(f"Sending Google Chat alert for {service_name}")
@@ -130,6 +131,10 @@ def main():
                 next_alert_in_days = alert_again - (datetime.datetime.now() - expiring_certs.get(domain)).days
                 print(f"Domain {domain} has already been alerted on. Next alert in {next_alert_in_days} days.")
         elif domain in expiring_certs:
+            # The certificate has been renewed, send an alert
+            message = f"✅ SSL certificate for {domain} has been renewed! It is now valid for {days_left} days."
+            send_alert(chat_webhook_url, domain, message)
+            # Now remove the domain from expiring_certs
             del expiring_certs[domain]
             write_expiring_certs(expiring_certs)
 
